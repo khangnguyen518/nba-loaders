@@ -97,25 +97,28 @@ def fetch_game_logs_for_players(player_ids: list, season: str):
         if VERBOSE:
             print(f"  [{i+1}/{len(player_ids)}] Player {player_id}...")
 
-        time.sleep(random.uniform(2, 4))
+        for season_type in ['Regular Season', 'Playoffs']:
+            time.sleep(random.uniform(2, 4))
 
-        try:
-            r = playergamelog.PlayerGameLog(
-                player_id=player_id,
-                season=season,
-            )
-            logs    = r.player_game_log.get_dict()
-            headers = logs['headers']
+            try:
+                r = playergamelog.PlayerGameLog(
+                    player_id=player_id,
+                    season=season,
+                    season_type_all_star=season_type
+                )
+                logs    = r.player_game_log.get_dict()
+                headers = logs['headers']
 
-            for row_data in logs['data']:
-                row = dict(zip(headers, row_data))
-                row['Player_ID']  = player_id
-                row['loaded_at']  = now
-                all_rows.append(row)
+                for row_data in logs['data']:
+                    row = dict(zip(headers, row_data))
+                    row['Player_ID']   = player_id
+                    row['season_type'] = season_type
+                    row['loaded_at']   = now
+                    all_rows.append(row)
 
-        except Exception as e:
-            if VERBOSE:
-                print(f"  ⚠️  Could not fetch player {player_id}: {e}")
+            except Exception as e:
+                if VERBOSE:
+                    print(f"  ⚠️  Could not fetch player {player_id} {season_type}: {e}")
 
     if not all_rows:
         print("  No game log rows fetched")
@@ -133,7 +136,7 @@ def fetch_game_logs_for_players(player_ids: list, season: str):
     client.load_table_from_json(all_rows, temp_table, job_config=job_config).result()
 
     columns     = list(all_rows[0].keys())
-    upsert_keys = ['Player_ID', 'Game_ID']
+    upsert_keys = ['Player_ID', 'Game_ID', 'season_type']
 
     dedup_sql = f"""
     CREATE OR REPLACE TABLE `{temp_table}` AS

@@ -29,7 +29,9 @@ def main():
                         help="Skip already-loaded players")
     parser.add_argument("--start-season",        type=int, default=2023)
     parser.add_argument("--end-season",          type=int, default=2025)
-
+    parser.add_argument('--season-type', type=str, default=None,
+                        choices=['Regular Season', 'Playoffs'],
+                        help="Fetch only Regular Season or Playoffs game logs. Defaults to both.")
     args = parser.parse_args()
 
     if args.active_only and args.historical_only:
@@ -74,7 +76,8 @@ def main():
             limit=args.limit_players,
             resume=args.resume,
             start_season=args.start_season,
-            end_season=args.end_season
+            end_season=args.end_season,
+            season_type=args.season_type
         )
 
     if not args.skip_team_logs:

@@ -1,27 +1,28 @@
 import time
+import random
 from nba_api.stats.endpoints import playergamelog
 from loaders.base import BaseLoader
-from config import COOLDOWN_INTERVAL, COOLDOWN_TIME, START_SEASON, END_SEASON, VERBOSE
+from config import BQ_PROJECT, BQ_DATASET, BQ_KEYFILE, COOLDOWN_INTERVAL, COOLDOWN_TIME, VERBOSE, START_SEASON, END_SEASON
 from google.cloud import bigquery
 from google.oauth2 import service_account
-from config import BQ_PROJECT, BQ_DATASET, BQ_KEYFILE
 
 
 class GameLogsLoader(BaseLoader):
 
     def __init__(self, active_only=False, historical_only=False, limit=None, resume=False,
-            start_season=None, end_season=None, current_season_only=False):
+                 start_season=None, end_season=None, current_season_only=False, season_type=None):
         super().__init__()
-        self.table_name           = "raw_player_game_logs"
-        self.active_only          = active_only
-        self.historical_only      = historical_only
-        self.limit                = limit
-        self.resume               = resume
-        self.start_season         = start_season if start_season is not None else START_SEASON
-        self.end_season           = end_season   if end_season   is not None else END_SEASON
-        self.current_season_only  = current_season_only
-        self.write_mode           = 'upsert'
-        self.upsert_keys          = ['Player_ID', 'Game_ID']
+        self.table_name          = "raw_player_game_logs"
+        self.active_only         = active_only
+        self.historical_only     = historical_only
+        self.limit               = limit
+        self.resume              = resume
+        self.start_season        = start_season if start_season is not None else START_SEASON
+        self.end_season          = end_season   if end_season   is not None else END_SEASON
+        self.current_season_only = current_season_only
+        self.season_type         = season_type  # None = both, 'Regular Season', or 'Playoffs'
+        self.write_mode          = 'upsert'
+        self.upsert_keys         = ['Player_ID', 'Game_ID', 'season_type']
 
     def get_create_table_ddl(self) -> str:
         return f"""
@@ -52,18 +53,30 @@ class GameLogsLoader(BaseLoader):
             PF              INT64,
             PTS             INT64,
             PLUS_MINUS      INT64,
-            TEAM_ID         INT64,
             VIDEO_AVAILABLE INT64,
+            season_type     STRING,
             loaded_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP()
         )
         """
 
+    def _get_loaded_keys(self) -> set:
+        if not self.resume:
+            return set()
+        try:
+            credentials = service_account.Credentials.from_service_account_file(BQ_KEYFILE)
+            client      = bigquery.Client(credentials=credentials, project=BQ_PROJECT)
+            query       = f"SELECT DISTINCT Player_ID FROM `{BQ_PROJECT}.{BQ_DATASET}.{self.table_name}`"
+            result      = client.query(query).result()
+            return {row.Player_ID for row in result}
+        except Exception:
+            return set()
+
     def _get_player_seasons(self) -> dict:
         credentials = service_account.Credentials.from_service_account_file(BQ_KEYFILE)
-        client = bigquery.Client(credentials=credentials, project=BQ_PROJECT)
+        client      = bigquery.Client(credentials=credentials, project=BQ_PROJECT)
 
         query = f"""
-        SELECT DISTINCT p.id as player_id, c.SEASON_ID
+        SELECT p.id as player_id, c.SEASON_ID
         FROM `{BQ_PROJECT}.{BQ_DATASET}.raw_players` p
         JOIN `{BQ_PROJECT}.{BQ_DATASET}.raw_player_career_stats` c
           ON p.id = c.PLAYER_ID
@@ -71,6 +84,7 @@ class GameLogsLoader(BaseLoader):
               BETWEEN {self.start_season} AND {self.end_season}
         {"AND CAST(SUBSTR(c.SEASON_ID, 1, 4) AS INT64) = " + str(self.end_season) if self.current_season_only else ""}
         {"AND p.is_active = TRUE" if self.active_only else "AND p.is_active = FALSE" if self.historical_only else ""}
+        ORDER BY p.id, c.SEASON_ID
         """
 
         player_seasons: dict = {}
@@ -82,61 +96,48 @@ class GameLogsLoader(BaseLoader):
 
         return player_seasons
 
-    def _get_loaded_keys(self) -> set:
-        if not self.resume:
-            return set()
-        try:
-            credentials = service_account.Credentials.from_service_account_file(BQ_KEYFILE)
-            client = bigquery.Client(credentials=credentials, project=BQ_PROJECT)
-            query  = f"""
-            SELECT DISTINCT Player_ID, SEASON_ID
-            FROM `{BQ_PROJECT}.{BQ_DATASET}.{self.table_name}`
-            """
-            return {(row.Player_ID, row.SEASON_ID) for row in client.query(query).result()}
-        except Exception:
-            return set()
-
     def fetch_data(self) -> list:
         player_seasons = self._get_player_seasons()
-        loaded_keys    = self._get_loaded_keys()
+        loaded_ids     = self._get_loaded_keys()
         results        = []
-        total_players  = len(player_seasons)
+        total          = len(player_seasons)
+
+        season_types = [self.season_type] if self.season_type else ['Regular Season', 'Playoffs']
 
         for i, (player_id, seasons) in enumerate(player_seasons.items()):
             if self._shutdown_requested:
                 break
 
+            if player_id in loaded_ids:
+                if VERBOSE:
+                    print(f"  Skipping {player_id} (already loaded)")
+                continue
+
             if VERBOSE:
-                print(f"[{i+1}/{total_players}] Player {player_id} — {len(seasons)} season(s)...")
+                print(f"[{i+1}/{total}] Player {player_id} — {len(seasons)} season(s)...")
 
-            for season_id in seasons:
-                if self._shutdown_requested:
-                    break
+            for season in seasons:
+                for season_type in season_types:
+                    response = self.api_call(
+                        playergamelog.PlayerGameLog,
+                        player_id=player_id,
+                        season=season,
+                        season_type_all_star=season_type
+                    )
 
-                if (player_id, season_id) in loaded_keys:
-                    if VERBOSE:
-                        print(f"  Skipping {season_id} (already loaded)")
-                    continue
+                    if response is None:
+                        continue
 
-                response = self.api_call(
-                    playergamelog.PlayerGameLog,
-                    player_id=player_id,
-                    season=season_id
-                )
-
-                if response is None:
-                    continue
-
-                try:
-                    logs    = response.player_game_log.get_dict()
-                    headers = logs["headers"]
-                    for row_data in logs["data"]:
-                        row = dict(zip(headers, row_data))
-                        row["Player_ID"] = player_id
-                        results.append({k: self._clean_value(v) for k, v in row.items()})
-                except Exception as e:
-                    if VERBOSE:
-                        print(f"  ⚠️  Could not parse {player_id}/{season_id}: {e}")
+                    try:
+                        logs    = response.player_game_log.get_dict()
+                        headers = logs['headers']
+                        for row_data in logs['data']:
+                            row = dict(zip(headers, row_data))
+                            row['season_type'] = season_type
+                            results.append({k: self._clean_value(v) for k, v in row.items()})
+                    except Exception as e:
+                        if VERBOSE:
+                            print(f"  ⚠️  Could not parse player {player_id} {season_type}: {e}")
 
             if (i + 1) % COOLDOWN_INTERVAL == 0:
                 if VERBOSE:
@@ -147,9 +148,9 @@ class GameLogsLoader(BaseLoader):
 
 
 def load_game_logs(active_only=False, historical_only=False, limit=None, resume=False,
-                   start_season=None, end_season=None, current_season_only=False):
+                   start_season=None, end_season=None, current_season_only=False, season_type=None):
     GameLogsLoader(
         active_only=active_only, historical_only=historical_only, limit=limit, resume=resume,
         start_season=start_season, end_season=end_season,
-        current_season_only=current_season_only
+        current_season_only=current_season_only, season_type=season_type
     ).run()
