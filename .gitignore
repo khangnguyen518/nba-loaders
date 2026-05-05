@@ -6,3 +6,8 @@ __pycache__/
 .DS_Store
 failed_attempts_*.json
 logs/
+
+# Claude Code
+.claude/settings.local.json
+.claude/.cache/
+.claude/projects/
