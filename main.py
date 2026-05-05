@@ -7,7 +7,9 @@ from loaders import (
     load_player_career,
     load_game_logs,
     load_team_game_logs,
+    load_player_advanced_season_stats,
 )
+from loaders.player_advanced_season_stats import CURRENT_SEASON
 
 
 def main():
@@ -18,7 +20,10 @@ def main():
     parser.add_argument("--skip-player-info",    action="store_true")
     parser.add_argument("--skip-player-career",  action="store_true")
     parser.add_argument("--skip-game-logs",      action="store_true")
-    parser.add_argument("--skip-team-logs",      action="store_true")
+    parser.add_argument("--skip-team-logs",       action="store_true")
+    parser.add_argument("--skip-advanced-stats",  action="store_true")
+    parser.add_argument("--season",               type=str, default=CURRENT_SEASON,
+                        help="Season for advanced stats (e.g. '2024-25'). Defaults to current season.")
     parser.add_argument("--active-only",         action="store_true",
                         help="Only process active players (~550)")
     parser.add_argument("--historical-only",      action="store_true",
@@ -85,6 +90,9 @@ def main():
             start_season=args.start_season,
             end_season=args.end_season
         )
+
+    if not args.skip_advanced_stats:
+        load_player_advanced_season_stats(season=args.season)
 
     print("\n" + "="*60)
     print("✓ All tables loaded successfully")

@@ -4,6 +4,7 @@ from loaders.player_info   import load_player_info
 from loaders.player_career import load_player_career
 from loaders.game_logs     import load_game_logs
 from loaders.team_game_logs import load_team_game_logs
+from loaders.player_advanced_season_stats import load_player_advanced_season_stats
 
 __all__ = [
     "load_teams",
@@ -12,4 +13,5 @@ __all__ = [
     "load_player_career",
     "load_game_logs",
     "load_team_game_logs",
+    "load_player_advanced_season_stats",
 ]
